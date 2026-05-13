@@ -477,8 +477,8 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     setState(() {
-      // reverse:true + 最新消息在索引0 → append 到末尾 = 加到列表顶部
-      _messages.addAll(filtered);
+      // reverse:true + 最新消息在索引0 → append 反转后的数据到末尾 = 正确的时间序
+      _messages.addAll(filtered.reversed.toList());
       _loadOffset += msgs.length;
       _hasMore = msgs.length >= 30;
       _isLoading = false;

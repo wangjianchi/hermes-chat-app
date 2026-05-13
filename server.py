@@ -173,6 +173,9 @@ class Handler(BaseHTTPRequestHandler):
                 start = -(limit + offset) if limit + offset < len(msgs) else 0
                 end = -offset if offset > 0 else None
                 msgs = msgs[start:end]
+                # 精简字段：只保留前端需要的
+                KEEP = {"role", "content"}
+                msgs = [{k: m[k] for k in KEEP if k in m and m[k] is not None} for m in msgs]
             else:
                 msgs = []
         except Exception as e:
