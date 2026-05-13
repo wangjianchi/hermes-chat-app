@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../services/hermes_api.dart';
 import 'settings_screen.dart';
+import 'stats_detail_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   final HermesApiService apiService;
@@ -29,7 +31,9 @@ class ProfileScreenState extends State<ProfileScreen> {
     _loadStats();
   }
 
-  void refresh() => _loadStats();
+  void refresh() {
+    _loadStats();
+  }
 
   Future<void> _loadStats() async {
     setState(() {
@@ -37,37 +41,30 @@ class ProfileScreenState extends State<ProfileScreen> {
       _error = null;
     });
     try {
-      final host = '100.126.192.84:8080';
-      final response = await http_get('http://$host/api/stats');
-      if (response != null) {
-        setState(() {
-          _stats = response;
-          _isLoading = false;
-        });
-      } else {
-        setState(() {
-          _error = '无法连接后端';
-          _isLoading = false;
-        });
+      final host = kIsWeb ? 'localhost:8080' : '100.126.192.84:8080';
+      // 加载统计
+      final statsResp = await http.get(
+        Uri.parse('http://$host/api/stats'),
+      ).timeout(const Duration(seconds: 5));
+      if (statsResp.statusCode == 200) {
+        setState(() => _stats = jsonDecode(statsResp.body));
       }
     } catch (e) {
+      setState(() => _error = e.toString());
+    } finally {
       setState(() {
-        _error = e.toString();
         _isLoading = false;
       });
     }
   }
 
-  Future<Map<String, dynamic>?> http_get(String url) async {
-    try {
-      final http.Response response = await http
-          .get(Uri.parse(url))
-          .timeout(const Duration(seconds: 5));
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body) as Map<String, dynamic>;
-      }
-    } catch (_) {}
-    return null;
+  void _openStatsDetail() async {
+    final host = kIsWeb ? 'localhost:8080' : '100.126.192.84:8080';
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => StatsDetailScreen(sessionHost: host),
+      ),
+    );
   }
 
   String _formatNumber(dynamic val) {
@@ -150,8 +147,15 @@ class ProfileScreenState extends State<ProfileScreen> {
 
     final s = _stats;
     final todaySessions = s['today_sessions'] ?? 0;
-    final todayTokens = (s['today_input_tokens'] ?? 0) + (s['today_output_tokens'] ?? 0);
+    final todayTokens = (s['today_input_tokens'] ?? 0) + (s['today_output_tokens'] ?? 0)
+        + (s['today_cache_read'] ?? 0) + (s['today_cache_write'] ?? 0);
+    final todayOutput = s['today_output_tokens'] ?? 0;
     final todayCache = (s['today_cache_read'] ?? 0) + (s['today_cache_write'] ?? 0);
+    final totalTokens = (s['total_input_tokens'] ?? 0) + (s['total_output_tokens'] ?? 0)
+        + (s['total_cache_read'] ?? 0) + (s['total_cache_write'] ?? 0);
+    final todayCacheRate = todayTokens > 0
+        ? (todayCache / todayTokens * 100).toStringAsFixed(1)
+        : '0.0';
 
     return RefreshIndicator(
       onRefresh: _loadStats,
@@ -183,9 +187,12 @@ class ProfileScreenState extends State<ProfileScreen> {
           const SizedBox(height: 28),
 
           // 今日统计卡片
-          Text('今日统计',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
-                  color: Colors.white.withAlpha(180))),
+          GestureDetector(
+            onTap: () => _openStatsDetail(),
+            child: Text('今日统计',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
+                    color: Colors.white.withAlpha(180))),
+          ),
           const SizedBox(height: 12),
           Row(
             children: [
@@ -194,21 +201,21 @@ class ProfileScreenState extends State<ProfileScreen> {
                 _formatNumber(todaySessions), const Color(0xFF6C63FF))),
               const SizedBox(width: 12),
               Expanded(child: _statCard(
-                Icons.token_outlined, 'Token',
-                _formatTokens(todayTokens), const Color(0xFF00BFA5))),
+                Icons.token_outlined, '总Token',
+                _formatTokens(todayTokens), const Color(0xFF00BFA5),
+                onTap: () => _openStatsDetail())),
             ],
           ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(child: _statCard(
-                Icons.cached_outlined, '缓存 (今日)',
-                _formatNumber(todayCache), const Color(0xFFFF7043))),
+                Icons.output_outlined, '总输出',
+                _formatTokens(todayOutput), const Color(0xFF42A5F5))),
               const SizedBox(width: 12),
               Expanded(child: _statCard(
-                Icons.storage_outlined, '总缓存',
-                _formatNumber(s['total_cache_read'] ?? 0),
-                const Color(0xFFAB47BC))),
+                Icons.cached_outlined, '缓存率',
+                '$todayCacheRate%', const Color(0xFFFF7043))),
             ],
           ),
           const SizedBox(height: 28),
@@ -231,6 +238,8 @@ class ProfileScreenState extends State<ProfileScreen> {
                 _infoRow('总输出 Token', _formatTokens(s['total_output_tokens'])),
                 _infoRow('总缓存读取', _formatTokens(s['total_cache_read'])),
                 _infoRow('总缓存写入', _formatTokens(s['total_cache_write'])),
+                const Divider(height: 24, color: Color(0xFF2A2A3E)),
+                _infoRow('总消耗 Token', _formatTokens(totalTokens)),
               ],
             ),
           ),
@@ -258,13 +267,14 @@ class ProfileScreenState extends State<ProfileScreen> {
               ),
             ),
           ),
+          const SizedBox(height: 20),
         ],
       ),
     );
   }
 
-  Widget _statCard(IconData icon, String label, String value, Color color) {
-    return Container(
+  Widget _statCard(IconData icon, String label, String value, Color color, {VoidCallback? onTap}) {
+    final card = Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFF1A1A2E),
@@ -283,6 +293,10 @@ class ProfileScreenState extends State<ProfileScreen> {
         ],
       ),
     );
+    if (onTap != null) {
+      return GestureDetector(onTap: onTap, child: card);
+    }
+    return card;
   }
 
   Widget _infoRow(String label, String value) {

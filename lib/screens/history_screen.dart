@@ -3,7 +3,7 @@ import '../services/hermes_api.dart';
 
 class HistoryScreen extends StatefulWidget {
   final HermesApiService apiService;
-  final void Function(String sessionId, List<Map<String, dynamic>> messages) onSessionTap;
+  final void Function(String sessionId, List<Map<String, dynamic>> messages, String title) onSessionTap;
 
   const HistoryScreen({
     super.key,
@@ -209,7 +209,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
               );
               final msgs = await widget.apiService.fetchSessionMessages(sid, limit: 30);
               if (context.mounted) Navigator.of(context).pop();
-              widget.onSessionTap(sid, msgs);
+              final title = (s['title'] as String?) ?? _preview(s);
+              widget.onSessionTap(sid, msgs, title);
             },
           );
         },

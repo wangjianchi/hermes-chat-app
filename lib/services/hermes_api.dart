@@ -239,6 +239,21 @@ class HermesApiService {
     return [];
   }
 
+  /// 重命名会话
+  Future<bool> renameSession(String sessionId, String title) async {
+    try {
+      final host = kIsWeb ? 'localhost:8080' : '100.126.192.84:8080';
+      final response = await http.post(
+        Uri.parse('http://$host/api/sessions/$sessionId/rename'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'title': title}),
+      ).timeout(const Duration(seconds: 5));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 重置会话（开始新对话）
   void resetSession() {
     _currentSessionId = null;

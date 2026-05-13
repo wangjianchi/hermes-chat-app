@@ -56,7 +56,9 @@
 - **使用统计** — 今日/累计 Token 用量、缓存命中统计
 - **连接配置** — 支持自定义服务器地址和 API 密钥
 - **深色主题** — Material 3 深色设计，紫色主题色
-- **热更新** — 接入 Shorebird，无需重新安装即可推送更新
+- **Markdown 渲染** — AI 回复中的表格、代码块、列表等格式完整显示
+- **统计详情** — 每日 Token 消耗趋势图 + 会话占比分析
+- **会话重命名** — 聊天窗口内点击标题即可修改会话名称
 
 ---
 
@@ -171,25 +173,8 @@ chat_app/
 │       └── hermes_api.dart          # Hermes API 服务
 ├── server.py                        # 会话历史后端
 ├── pubspec.yaml                     # Flutter 依赖
-├── shorebird.yaml                   # Shorebird 热更新配置
 └── README.md
 ```
-
----
-
-## 热更新（Shorebird）
-
-项目已集成 Shorebird，无需重新安装即可推送代码更新：
-
-```bash
-# 安装 Shorebird
-curl -fsSL https://raw.githubusercontent.com/shorebirdtech/install/main/install.sh | bash
-
-# 发布补丁（Android）
-shorebird patch --platforms android
-```
-
-Shorebird App ID: `f9af8a75-6e8d-45e7-9086-0016f5d9ecd4`
 
 ---
 
@@ -203,5 +188,4 @@ Shorebird App ID: `f9af8a75-6e8d-45e7-9086-0016f5d9ecd4`
 | 后端 | Python HTTPServer（多线程） |
 | 数据源 | Hermes Agent SessionDB (SQLite) |
 | 远程连接 | Tailscale WireGuard VPN |
-| 热更新 | Shorebird Code Push |
 | 主题 | Material 3 + 深色模式 |

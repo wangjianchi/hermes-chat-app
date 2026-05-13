@@ -21,6 +21,8 @@ class _HomeScreenState extends State<HomeScreen> {
   // 用于从历史会话跳转到聊天
   String? _resumeSessionId;
   List<ChatMessage>? _resumeMessages;
+  String? _resumeTitle;
+  int _resumeOffset = 0;
   int _resumeKey = 0;
 
   // 自动恢复上次会话的标志
@@ -77,12 +79,13 @@ class _HomeScreenState extends State<HomeScreen> {
       final chatMessages = msgs
           .where((m) =>
               m['role'] != 'tool' &&
+              m['role'] != 'system' &&
               m['content'] is String &&
               (m['content'] as String).isNotEmpty)
           .map((m) => ChatMessage(
                 id: 'hist-${m.hashCode}',
                 content: m['content'] as String,
-                isUser: m['role'] == 'user',
+                isUser: m['role'] == 'user' && !(m['content'] as String).startsWith('[IMPORTANT:'),
                 timestamp: DateTime.now(),
                 reasoning: m['reasoning'] as String?,
               ))
@@ -92,6 +95,8 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _resumeSessionId = targetId;
         _resumeMessages = chatMessages;
+        _resumeOffset = msgs.length;
+        _resumeTitle = mostRecent['title'] as String?;
         _resumeKey++;
         _autoResumed = true;
       });
@@ -100,16 +105,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _onSessionTap(String sessionId, List<Map<String, dynamic>> rawMessages) {
+  void _onSessionTap(String sessionId, List<Map<String, dynamic>> rawMessages, String title) {
     final msgs = rawMessages
         .where((m) =>
             m['role'] != 'tool' &&
+            m['role'] != 'system' &&
             m['content'] is String &&
             (m['content'] as String).isNotEmpty)
         .map((m) => ChatMessage(
               id: 'hist-${m.hashCode}',
               content: m['content'] as String,
-              isUser: m['role'] == 'user',
+              isUser: m['role'] == 'user' && !(m['content'] as String).startsWith('[IMPORTANT:'),
               timestamp: DateTime.now(),
               reasoning: m['reasoning'] as String?,
             ))
@@ -118,6 +124,8 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _resumeSessionId = sessionId;
       _resumeMessages = msgs;
+      _resumeOffset = rawMessages.length;
+      _resumeTitle = title;
       _resumeKey++;
       _currentIndex = 0;
     });
@@ -148,6 +156,8 @@ class _HomeScreenState extends State<HomeScreen> {
             apiService: _apiService,
             initialSessionId: _resumeSessionId,
             initialMessages: _resumeMessages,
+            initialSessionTitle: _resumeTitle,
+            initialOffset: _resumeOffset,
             onSessionChanged: _onChatUpdated,
           ),
           HistoryScreen(
@@ -167,10 +177,6 @@ class _HomeScreenState extends State<HomeScreen> {
         selectedIndex: _currentIndex,
         onDestinationSelected: (i) {
           setState(() => _currentIndex = i);
-          // 切换到"我的"时刷新统计
-          if (i == 2) {
-            _profileKey.currentState?.refresh();
-          }
         },
         indicatorColor: const Color(0xFF6C63FF).withAlpha(60),
         destinations: [

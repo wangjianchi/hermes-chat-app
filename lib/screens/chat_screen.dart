@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import '../models/chat_message.dart';
 import '../services/hermes_api.dart';
 
@@ -9,6 +10,8 @@ class ChatScreen extends StatefulWidget {
   final HermesApiService apiService;
   final String? initialSessionId;
   final List<ChatMessage>? initialMessages;
+  final String? initialSessionTitle;
+  final int initialOffset;
   final void Function(String? sessionId)? onSessionChanged;
 
   const ChatScreen({
@@ -16,6 +19,8 @@ class ChatScreen extends StatefulWidget {
     required this.apiService,
     this.initialSessionId,
     this.initialMessages,
+    this.initialSessionTitle,
+    this.initialOffset = 0,
     this.onSessionChanged,
   });
 
@@ -27,6 +32,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   late List<ChatMessage> _messages;
+  late String _currentTitle;
   bool _isLoading = false;
   String _streamingContent = '';
   int _loadOffset = 0;
@@ -36,15 +42,26 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _messages = widget.initialMessages ?? [];
+    _messages = (widget.initialMessages ?? []).reversed.toList(); // 最新消息在前
+    _currentTitle = widget.initialSessionTitle ?? '';
     if (widget.initialSessionId != null) {
       _resumeSessionId = widget.initialSessionId;
       widget.apiService.setSessionId(widget.initialSessionId!);
-      _loadOffset = widget.initialMessages?.length ?? 0;
-      _hasMore = _loadOffset >= 30;
+      _loadOffset = widget.initialOffset;
+      _hasMore = true;
       widget.onSessionChanged?.call(widget.initialSessionId);
     }
+    _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients || !_hasMore || _isLoading) return;
+    // reverse:true 时 offset=0 在底部，maxScrollExtent 在顶部
+    if (_scrollController.offset > _scrollController.position.maxScrollExtent - 400) {
+      _loadMore();
+    }
   }
 
   @override
@@ -58,8 +75,8 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 300),
+          0,
+          duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
         );
       }
@@ -167,7 +184,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     setState(() {
-      _messages.add(userMsg);
+      _messages.insert(0, userMsg);
       _isLoading = true;
       _streamingContent = '';
     });
@@ -183,7 +200,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
       if (_streamingContent.isNotEmpty) {
         setState(() {
-          _messages.add(ChatMessage(
+          _messages.insert(0, ChatMessage(
             id: 'resp-${DateTime.now().millisecondsSinceEpoch}',
             content: _streamingContent,
             isUser: false,
@@ -194,7 +211,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } catch (e) {
       setState(() {
-        _messages.add(ChatMessage(
+        _messages.insert(0, ChatMessage(
           id: 'err-${DateTime.now().millisecondsSinceEpoch}',
           content: '错误：$e',
           isUser: false,
@@ -206,6 +223,9 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom();
       final sid = widget.apiService.currentSessionId;
       if (sid != null) {
+        _resumeSessionId = sid;
+        _loadOffset = 0;
+        _hasMore = true;
         widget.onSessionChanged?.call(sid);
       }
     }
@@ -217,42 +237,84 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          _messages.any((m) => !m.isUser) ? '继续对话' : 'Hermes 聊天',
-        ),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_outlined),
-            tooltip: '新对话',
-            onPressed: () {
-              widget.apiService.resetSession();
-              widget.onSessionChanged?.call(null);
-              setState(() => _messages.clear());
-            },
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        backgroundColor: const Color(0xFF0D0D1A),
+        titleSpacing: 0,
+        title: Padding(
+          padding: const EdgeInsets.only(left: 4),
+          child: Row(
+            children: [
+              Container(
+                width: 8, height: 8,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF6C63FF),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: GestureDetector(
+                  onTap: _resumeSessionId != null ? _showRenameDialog : null,
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          _currentTitle.isNotEmpty ? _currentTitle : (_messages.any((m) => !m.isUser) ? '继续对话' : 'Hermes 聊天'),
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (_resumeSessionId != null) ...[
+                        const SizedBox(width: 4),
+                        Icon(Icons.edit_outlined, size: 13,
+                            color: Colors.white.withAlpha(60)),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
+        ),
+        centerTitle: false,
+        actions: [
+          SizedBox(
+            width: 36, height: 36,
+            child: IconButton(
+              padding: EdgeInsets.zero,
+              icon: Container(
+                width: 28, height: 28,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6C63FF).withAlpha(30),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.add, size: 18, color: Color(0xFF6C63FF)),
+              ),
+              tooltip: '新对话',
+              onPressed: () {
+                widget.apiService.resetSession();
+                widget.onSessionChanged?.call(null);
+                setState(() => _messages.clear());
+              },
+            ),
+          ),
+          const SizedBox(width: 12),
         ],
       ),
       body: Column(
         children: [
-          // 恢复历史会话提示
-          if (widget.initialSessionId != null && _messages.length <= (widget.initialMessages?.length ?? 0))
-            _buildHistoryBanner(),
           // 消息列表
           Expanded(
             child: _messages.isEmpty && _streamingContent.isEmpty
                 ? _buildEmptyState()
                 : ListView.builder(
+                    reverse: true,
                     controller: _scrollController,
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    itemCount: _messages.length + (_streamingContent.isNotEmpty ? 1 : 0) + (_hasMore ? 1 : 0),
+                    itemCount: _messages.length + (_streamingContent.isNotEmpty ? 1 : 0),
                     itemBuilder: (context, index) {
-                      int msgIndex = index;
-                      if (_hasMore) {
-                        if (index == 0) return _buildLoadMoreButton();
-                        msgIndex = index - 1;
-                      }
-                      if (msgIndex == _messages.length) {
+                      if (_streamingContent.isNotEmpty && index == 0) {
                         return _buildMessageBubble(
                           ChatMessage(
                             id: 'streaming',
@@ -263,7 +325,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           isStreaming: true,
                         );
                       }
-                      return _buildMessageBubble(_messages[msgIndex]);
+                      final msgIdx = _streamingContent.isNotEmpty ? index - 1 : index;
+                      return _buildMessageBubble(_messages[msgIdx]);
                     },
                   ),
           ),
@@ -383,52 +446,44 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadMore() async {
     if (_resumeSessionId == null || _isLoading) return;
-    setState(() => _isLoading = true);
+
+    _isLoading = true;
+
     final msgs = await widget.apiService.fetchSessionMessages(
       _resumeSessionId!,
       limit: 30,
       offset: _loadOffset,
     );
+
+    final filtered = msgs
+        .where((m) =>
+            m['role'] != 'tool' &&
+            m['role'] != 'system' &&
+            m['content'] is String &&
+            (m['content'] as String).isNotEmpty)
+        .map((m) => ChatMessage(
+              id: 'hist-${m.hashCode}',
+              content: m['content'] as String,
+              isUser: m['role'] == 'user' && !(m['content'] as String).startsWith('[IMPORTANT:'),
+              timestamp: DateTime.now(),
+              reasoning: m['reasoning'] as String?,
+            ))
+        .toList();
+
+    if (filtered.isEmpty && msgs.isEmpty) {
+      _hasMore = false;
+      _isLoading = false;
+      return;
+    }
+
     setState(() {
-      if (msgs.isNotEmpty) {
-        _messages.insertAll(0, msgs
-            .where((m) =>
-                m['role'] != 'tool' &&
-                m['content'] is String &&
-                (m['content'] as String).isNotEmpty)
-            .map((m) => ChatMessage(
-                  id: 'hist-${m.hashCode}',
-                  content: m['content'] as String,
-                  isUser: m['role'] == 'user',
-                  timestamp: DateTime.now(),
-                  reasoning: m['reasoning'] as String?,
-                ))
-            .toList());
-        _loadOffset += msgs.length;
-        _hasMore = msgs.length >= 30;
-      } else {
-        _hasMore = false;
-      }
+      // reverse:true + 最新消息在索引0 → append 到末尾 = 加到列表顶部
+      _messages.addAll(filtered);
+      _loadOffset += msgs.length;
+      _hasMore = msgs.length >= 30;
       _isLoading = false;
     });
-  }
-
-  Widget _buildLoadMoreButton() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Center(
-        child: TextButton.icon(
-          onPressed: _isLoading ? null : _loadMore,
-          icon: _isLoading
-              ? const SizedBox(
-                  width: 14, height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.expand_less, size: 18),
-          label: Text(_isLoading ? '加载中...' : '加载更早的消息'),
-          style: TextButton.styleFrom(foregroundColor: const Color(0xFF6C63FF)),
-        ),
-      ),
-    );
+    // 不需要调整滚动位置：现有消息（低索引）保持原位不动
   }
 
   // ── 空白状态 ──
@@ -460,37 +515,112 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  void _showRenameDialog() {
+    final controller = TextEditingController(
+      text: _currentTitle,
+    );
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: const Text('重命名会话', style: TextStyle(fontSize: 16)),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(fontSize: 15),
+          decoration: InputDecoration(
+            hintText: '输入新名称',
+            hintStyle: TextStyle(color: Colors.white.withAlpha(60)),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: BorderSide.none,
+            ),
+            filled: true,
+            fillColor: const Color(0xFF2A2A3E),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text('取消', style: TextStyle(color: Colors.white.withAlpha(120))),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final title = controller.text.trim();
+              if (title.isEmpty || _resumeSessionId == null) return;
+              final ok = await widget.apiService.renameSession(_resumeSessionId!, title);
+              if (ctx.mounted) Navigator.of(ctx).pop();
+              if (ok && mounted) {
+                setState(() => _currentTitle = title);
+              }
+            },
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF6C63FF)),
+            child: const Text('确认'),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ── 消息气泡 ──
 
   Widget _buildMessageBubble(ChatMessage msg, {bool isStreaming = false}) {
     final isUser = msg.isUser;
+    final timeStr = _formatTime(msg.timestamp);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
-        mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (!isUser) ...[
-            const CircleAvatar(
-              radius: 14,
-              backgroundColor: Color(0xFF6C63FF),
-              child: Text('H', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          // 头像（AI 有，用户有）
+          CircleAvatar(
+            radius: 14,
+            backgroundColor: isUser
+                ? const Color(0xFF6C63FF).withAlpha(80)
+                : const Color(0xFF6C63FF),
+            child: Icon(
+              isUser ? Icons.person_outline : Icons.auto_awesome,
+              size: 14,
+              color: isUser ? const Color(0xFF6C63FF) : Colors.white,
             ),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
+          ),
+          const SizedBox(width: 10),
+          // 内容区
+          Expanded(
             child: Column(
-              crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 思考过程
+                // 角色标签 + 时间
+                Row(
+                  children: [
+                    Text(isUser ? '你' : 'AI',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: isUser
+                                ? const Color(0xFF6C63FF)
+                                : const Color(0xFF00BFA5))),
+                    const SizedBox(width: 8),
+                    Text(timeStr,
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.white.withAlpha(60))),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                // 思考过程（AI 消息）
                 if (!isUser && msg.reasoning != null && msg.reasoning!.isNotEmpty)
                   _buildReasoningBubble(msg.reasoning!),
-                // 图片附件（用户消息中的图片）
-                if (isUser && msg.hasImage)
+                // 图片附件
+                if (msg.hasImage) ...[
+                  const SizedBox(height: 4),
                   _buildImageBubble(msg),
+                ],
                 // 文件附件
-                if (isUser && msg.hasFile)
+                if (msg.hasFile) ...[
+                  const SizedBox(height: 4),
                   _buildFileBubble(msg),
+                ],
                 // 文本内容
                 if (msg.content.isNotEmpty || isStreaming)
                   Container(
@@ -502,20 +632,65 @@ class _ChatScreenState extends State<ChatScreen> {
                       color: isUser
                           ? const Color(0xFF6C63FF)
                           : const Color(0xFF1E1E32),
-                      borderRadius: BorderRadius.only(
-                        topLeft: const Radius.circular(20),
-                        topRight: const Radius.circular(20),
-                        bottomLeft: isUser ? const Radius.circular(20) : Radius.zero,
-                        bottomRight: isUser ? Radius.zero : const Radius.circular(20),
-                      ),
+                      borderRadius: BorderRadius.circular(18),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          msg.content,
-                          style: const TextStyle(fontSize: 15, height: 1.4),
-                        ),
+                        if (isStreaming)
+                          Text(
+                            msg.content,
+                            style: const TextStyle(fontSize: 15, height: 1.4),
+                          )
+                        else
+                          MarkdownBody(
+                            data: msg.content,
+                            styleSheet: MarkdownStyleSheet(
+                              p: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white),
+                              h1: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
+                              h2: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
+                              h3: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
+                              code: TextStyle(
+                                fontSize: 13,
+                                color: const Color(0xFFFF7043),
+                                backgroundColor: Colors.black.withAlpha(80),
+                              ),
+                              codeblockDecoration: BoxDecoration(
+                                color: Colors.black.withAlpha(80),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              tableBorder: TableBorder.all(
+                                color: Colors.white.withAlpha(40),
+                                width: 0.5,
+                              ),
+                              tableHead: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                                fontSize: 13,
+                              ),
+                              tableBody: TextStyle(
+                                color: Colors.white.withAlpha(200),
+                                fontSize: 13,
+                              ),
+                              tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                              blockquoteDecoration: BoxDecoration(
+                                border: Border(left: BorderSide(color: const Color(0xFF6C63FF), width: 3)),
+                                color: Colors.white.withAlpha(5),
+                              ),
+                              blockquote: TextStyle(
+                                color: Colors.white.withAlpha(150),
+                                fontStyle: FontStyle.italic,
+                              ),
+                              listBullet: TextStyle(color: const Color(0xFF6C63FF), fontSize: 15),
+                              horizontalRuleDecoration: BoxDecoration(
+                                border: Border(top: BorderSide(color: Colors.white.withAlpha(20))),
+                              ),
+                              a: const TextStyle(color: Color(0xFF6C63FF), decoration: TextDecoration.underline),
+                            ),
+                            onTapLink: (text, href, title) {
+                              // 链接点击处理 - 可以打开浏览器
+                            },
+                          ),
                         if (isStreaming)
                           const Padding(
                             padding: EdgeInsets.only(top: 4),
@@ -546,10 +721,19 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
           ),
-          if (isUser) const SizedBox(width: 8),
         ],
       ),
     );
+  }
+
+  String _formatTime(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    if (diff.inSeconds < 60) return '刚刚';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}分钟前';
+    if (diff.inHours < 24) return '${diff.inHours}小时前';
+    if (diff.inDays < 7) return '${diff.inDays}天前';
+    return '${dt.month}/${dt.day} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
   Widget _buildImageBubble(ChatMessage msg) {
@@ -604,12 +788,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildReasoningBubble(String reasoning) {
+    final wordCount = reasoning.length;
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.only(bottom: 4),
       child: Material(
         color: Colors.transparent,
         child: InkWell(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           onTap: () {
             showDialog(
               context: context,
@@ -634,19 +819,21 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: const Color(0xFF2A2A3E),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.white.withAlpha(15)),
+              color: const Color(0xFF2A2A3E).withAlpha(180),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white.withAlpha(12)),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.psychology_outlined, size: 16, color: Colors.white.withAlpha(120)),
+                Icon(Icons.psychology_outlined, size: 16,
+                    color: Colors.white.withAlpha(120)),
                 const SizedBox(width: 6),
-                Text('思考过程',
+                Text('思考过程 ($wordCount字)',
                     style: TextStyle(fontSize: 12, color: Colors.white.withAlpha(120))),
-                const SizedBox(width: 4),
-                Icon(Icons.touch_app, size: 14, color: Colors.white.withAlpha(60)),
+                const Spacer(),
+                Icon(Icons.touch_app, size: 14,
+                    color: Colors.white.withAlpha(60)),
               ],
             ),
           ),

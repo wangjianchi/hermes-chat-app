@@ -43,9 +43,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._session_messages(sid)
         if p == "/api/stats":
             return self._stats()
+        if p == "/api/stats/daily":
+            return self._daily_stats()
         if p == "/api/health":
             return self._ok('{"status":"ok"}', "application/json")
         return self._static()
+
+    def do_POST(self):
+        p = urlparse(self.path).path
+        if p.startswith("/api/sessions/") and p.endswith("/rename"):
+            sid = p.split("/")[3]
+            return self._rename_session(sid)
+        self._ok('{"error":"not found"}', "application/json")
 
     def _ok(self, body, ctype):
         self.send_response(200)
@@ -64,6 +73,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if _session_db:
                 data = _session_db.list_sessions_rich(limit=limit, order_by_last_active=True)
+                # 精简字段：只保留前端需要的
+                KEEP = {"id","title","preview","source","model","message_count",
+                        "input_tokens","output_tokens","cache_read_tokens","cache_write_tokens",
+                        "started_at","last_active"}
+                for s in data:
+                    for k in list(s.keys()):
+                        if k not in KEEP:
+                            del s[k]
             else:
                 data = []
         except Exception as e:
@@ -111,6 +128,40 @@ class Handler(BaseHTTPRequestHandler):
             stats["error"] = str(e)
         self._ok(json.dumps(stats, ensure_ascii=False, default=str), "application/json")
 
+    def _daily_stats(self):
+        from urllib.parse import parse_qs
+        params = parse_qs(urlparse(self.path).query)
+        days = int(params.get("days", [30])[0])
+        result = []
+        try:
+            if _session_db:
+                conn = _session_db._conn
+                today = int(time.time())
+                for d in range(days - 1, -1, -1):
+                    day_start = today - (today % 86400) - d * 86400
+                    day_end = day_start + 86400
+                    row = conn.execute("SELECT "
+                        "COALESCE(SUM(input_tokens),0) AS inp, "
+                        "COALESCE(SUM(output_tokens),0) AS outp, "
+                        "COALESCE(SUM(cache_read_tokens),0) AS cr, "
+                        "COALESCE(SUM(cache_write_tokens),0) AS cw, "
+                        "COUNT(*) AS cnt "
+                        "FROM sessions WHERE started_at >= ? AND started_at < ?",
+                        (day_start, day_end)).fetchone()
+                    import datetime
+                    date_str = datetime.datetime.fromtimestamp(day_start).strftime("%m-%d")
+                    total = row["inp"] + row["outp"] + row["cr"] + row["cw"]
+                    result.append({
+                        "date": date_str,
+                        "input": row["inp"], "output": row["outp"],
+                        "cache": row["cr"] + row["cw"],
+                        "total": total,
+                        "sessions": row["cnt"],
+                    })
+        except Exception as e:
+            result = {"error": str(e)}
+        self._ok(json.dumps(result, ensure_ascii=False, default=str), "application/json")
+
     def _session_messages(self, session_id):
         params = parse_qs(urlparse(self.path).query)
         limit = int(params.get("limit", [50])[0])
@@ -127,6 +178,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             msgs = {"error": str(e)}
         self._ok(json.dumps(msgs, ensure_ascii=False, default=str), "application/json")
+
+    def _rename_session(self, session_id):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+            title = body.get("title", "").strip()
+            if not title:
+                self._ok('{"error":"title required"}', "application/json")
+                return
+            if _session_db:
+                _session_db.set_session_title(session_id, title)
+            self._ok('{"ok":true}', "application/json")
+        except Exception as e:
+            self._ok(json.dumps({"error": str(e)}), "application/json")
 
     def _static(self):
         path = urlparse(self.path).path or "/"
