@@ -48,3 +48,12 @@ app.*.map.json
 android/key.properties
 **/*.jks
 **/*.keystore
+
+# Credentials & secrets
+.env
+.env.*
+*.env
+**/*credentials*
+**/*secret*
+**/*token*
+!**/.gitignore
