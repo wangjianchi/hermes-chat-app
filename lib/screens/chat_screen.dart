@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/chat_message.dart';
 import '../services/hermes_api.dart';
 
@@ -38,6 +39,10 @@ class _ChatScreenState extends State<ChatScreen> {
   int _loadOffset = 0;
   bool _hasMore = false;
   String? _resumeSessionId;
+  bool _showMarkdown = true;
+  bool _showReasoning = true;
+  bool _autoScroll = true;
+  double _fontSize = 15.0;
 
   @override
   void initState() {
@@ -54,6 +59,18 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollController.addListener(_onScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+    _loadDisplayPrefs();
+  }
+
+  Future<void> _loadDisplayPrefs() async {
+    final p = await SharedPreferences.getInstance();
+    setState(() {
+      _showMarkdown = p.getBool('markdown') ?? true;
+      _showReasoning = p.getBool('reasoning') ?? true;
+      _autoScroll = p.getBool('auto_scroll') ?? true;
+      final fs = p.getInt('font_size') ?? 1;
+      _fontSize = [14.0, 15.0, 17.0][fs.clamp(0, 2)];
+    });
   }
 
   void _onScroll() {
@@ -72,6 +89,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _scrollToBottom() {
+    if (!_autoScroll) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -609,7 +627,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
                 const SizedBox(height: 4),
                 // 思考过程（AI 消息）
-                if (!isUser && msg.reasoning != null && msg.reasoning!.isNotEmpty)
+                if (!isUser && _showReasoning && msg.reasoning != null && msg.reasoning!.isNotEmpty)
                   _buildReasoningBubble(msg.reasoning!),
                 // 图片附件
                 if (msg.hasImage) ...[
@@ -637,60 +655,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (isStreaming)
-                          Text(
-                            msg.content,
-                            style: const TextStyle(fontSize: 15, height: 1.4),
-                          )
-                        else
-                          MarkdownBody(
-                            data: msg.content,
-                            styleSheet: MarkdownStyleSheet(
-                              p: const TextStyle(fontSize: 15, height: 1.4, color: Colors.white),
-                              h1: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
-                              h2: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
-                              h3: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
-                              code: TextStyle(
-                                fontSize: 13,
-                                color: const Color(0xFFFF7043),
-                                backgroundColor: Colors.black.withAlpha(80),
-                              ),
-                              codeblockDecoration: BoxDecoration(
-                                color: Colors.black.withAlpha(80),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              tableBorder: TableBorder.all(
-                                color: Colors.white.withAlpha(40),
-                                width: 0.5,
-                              ),
-                              tableHead: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                                fontSize: 13,
-                              ),
-                              tableBody: TextStyle(
-                                color: Colors.white.withAlpha(200),
-                                fontSize: 13,
-                              ),
-                              tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              blockquoteDecoration: BoxDecoration(
-                                border: Border(left: BorderSide(color: const Color(0xFF6C63FF), width: 3)),
-                                color: Colors.white.withAlpha(5),
-                              ),
-                              blockquote: TextStyle(
-                                color: Colors.white.withAlpha(150),
-                                fontStyle: FontStyle.italic,
-                              ),
-                              listBullet: TextStyle(color: const Color(0xFF6C63FF), fontSize: 15),
-                              horizontalRuleDecoration: BoxDecoration(
-                                border: Border(top: BorderSide(color: Colors.white.withAlpha(20))),
-                              ),
-                              a: const TextStyle(color: Color(0xFF6C63FF), decoration: TextDecoration.underline),
-                            ),
-                            onTapLink: (text, href, title) {
-                              // 链接点击处理 - 可以打开浏览器
-                            },
-                          ),
+                        _buildContentWidget(msg, isStreaming),
                         if (isStreaming)
                           const Padding(
                             padding: EdgeInsets.only(top: 4),
@@ -734,6 +699,40 @@ class _ChatScreenState extends State<ChatScreen> {
     if (diff.inHours < 24) return '${diff.inHours}小时前';
     if (diff.inDays < 7) return '${diff.inDays}天前';
     return '${dt.month}/${dt.day} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  Widget _buildContentWidget(ChatMessage msg, bool isStreaming) {
+    if (isStreaming) {
+      return Text(msg.content, style: TextStyle(fontSize: _fontSize, height: 1.4));
+    }
+    if (_showMarkdown) {
+      return MarkdownBody(
+        data: msg.content,
+        styleSheet: MarkdownStyleSheet(
+          p: TextStyle(fontSize: _fontSize, height: 1.4, color: Colors.white),
+          h1: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
+          h2: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
+          h3: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white, height: 1.4),
+          code: TextStyle(fontSize: 13, color: const Color(0xFFFF7043),
+              backgroundColor: Colors.black.withAlpha(80)),
+          codeblockDecoration: BoxDecoration(
+              color: Colors.black.withAlpha(80), borderRadius: BorderRadius.circular(8)),
+          tableBorder: TableBorder.all(color: Colors.white.withAlpha(40), width: 0.5),
+          tableHead: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13),
+          tableBody: TextStyle(color: Colors.white.withAlpha(200), fontSize: 13),
+          tableCellsPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          blockquoteDecoration: BoxDecoration(
+              border: Border(left: BorderSide(color: const Color(0xFF6C63FF), width: 3)),
+              color: Colors.white.withAlpha(5)),
+          blockquote: TextStyle(color: Colors.white.withAlpha(150), fontStyle: FontStyle.italic),
+          listBullet: const TextStyle(color: Color(0xFF6C63FF), fontSize: 15),
+          horizontalRuleDecoration: BoxDecoration(
+              border: Border(top: BorderSide(color: Colors.white.withAlpha(20)))),
+          a: const TextStyle(color: Color(0xFF6C63FF), decoration: TextDecoration.underline),
+        ),
+      );
+    }
+    return Text(msg.content, style: TextStyle(fontSize: _fontSize, height: 1.4, color: Colors.white));
   }
 
   Widget _buildImageBubble(ChatMessage msg) {

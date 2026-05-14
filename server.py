@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Hermes Chat 后端服务器（多线程版）"""
-import json, os, sys, socketserver, sqlite3, time
+import json, os, sys, socketserver, sqlite3, time, datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from threading import Thread
@@ -45,6 +45,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._stats()
         if p == "/api/stats/daily":
             return self._daily_stats()
+        if p == "/api/stats/hourly":
+            return self._hourly_stats()
+        if p == "/api/stats/models":
+            return self._model_stats()
         if p == "/api/health":
             return self._ok('{"status":"ok"}', "application/json")
         return self._static()
@@ -148,7 +152,6 @@ class Handler(BaseHTTPRequestHandler):
                         "COUNT(*) AS cnt "
                         "FROM sessions WHERE started_at >= ? AND started_at < ?",
                         (day_start, day_end)).fetchone()
-                    import datetime
                     date_str = datetime.datetime.fromtimestamp(day_start).strftime("%m-%d")
                     total = row["inp"] + row["outp"] + row["cr"] + row["cw"]
                     result.append({
@@ -157,6 +160,51 @@ class Handler(BaseHTTPRequestHandler):
                         "cache": row["cr"] + row["cw"],
                         "total": total,
                         "sessions": row["cnt"],
+                    })
+        except Exception as e:
+            result = {"error": str(e)}
+        self._ok(json.dumps(result, ensure_ascii=False, default=str), "application/json")
+
+    def _hourly_stats(self):
+        result = {str(h).zfill(2): {"input": 0, "output": 0, "cache": 0}
+                  for h in range(24)}
+        try:
+            if _session_db:
+                conn = _session_db._conn
+                today_start = time.time() - time.time() % 86400
+                rows = conn.execute(
+                    "SELECT started_at, input_tokens, output_tokens, "
+                    "cache_read_tokens, cache_write_tokens "
+                    "FROM sessions WHERE started_at >= ?",
+                    (today_start,)).fetchall()
+                for row in rows:
+                    hour = datetime.datetime.fromtimestamp(
+                        row["started_at"]).strftime("%H")
+                    h = result.setdefault(hour, {"input": 0, "output": 0, "cache": 0})
+                    h["input"] += row["input_tokens"] or 0
+                    h["output"] += row["output_tokens"] or 0
+                    h["cache"] += (row["cache_read_tokens"] or 0) + (row["cache_write_tokens"] or 0)
+        except Exception as e:
+            result = {"error": str(e)}
+        self._ok(json.dumps(result, ensure_ascii=False, default=str), "application/json")
+
+    def _model_stats(self):
+        result = []
+        try:
+            if _session_db:
+                conn = _session_db._conn
+                rows = conn.execute(
+                    "SELECT model, "
+                    "COALESCE(SUM(input_tokens+output_tokens+"
+                    "cache_read_tokens+cache_write_tokens),0) AS total "
+                    "FROM sessions WHERE model IS NOT NULL "
+                    "GROUP BY model ORDER BY total DESC").fetchall()
+                grand = sum(r["total"] for r in rows) or 1
+                for r in rows:
+                    result.append({
+                        "model": r["model"],
+                        "total": r["total"],
+                        "pct": round(r["total"] / grand * 100, 1),
                     })
         except Exception as e:
             result = {"error": str(e)}
@@ -175,7 +223,8 @@ class Handler(BaseHTTPRequestHandler):
                 msgs = msgs[start:end]
                 # 精简字段：只保留前端需要的
                 KEEP = {"role", "content"}
-                msgs = [{k: m[k] for k in KEEP if k in m and m[k] is not None} for m in msgs]
+                msgs = [{k: m[k] for k in KEEP if k in m and m[k] is not None} for m in msgs
+                        if m.get("content") and (not isinstance(m.get("content"), str) or m["content"])]
             else:
                 msgs = []
         except Exception as e:

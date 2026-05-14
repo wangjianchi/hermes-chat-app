@@ -197,7 +197,22 @@ class HermesApiService {
     );
   }
 
-  /// 检查连接
+  /// 检查连接（返回延迟毫秒）
+  Future<int> checkHealthWithLatency() async {
+    try {
+      final stopwatch = Stopwatch()..start();
+      final response = await http.get(
+        Uri.parse('$_baseUrl/health'),
+      ).timeout(const Duration(seconds: 5));
+      stopwatch.stop();
+      if (response.statusCode == 200) return stopwatch.elapsedMilliseconds;
+      return -1;
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  /// 获取会话历史主机地址（从 API 地址推导）
   Future<bool> checkHealth() async {
     try {
       final response = await http.get(

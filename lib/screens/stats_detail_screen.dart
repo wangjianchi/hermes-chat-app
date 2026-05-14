@@ -1,7 +1,13 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:http/http.dart' as http;
+import 'package:collection/collection.dart';
+
+const Color _purple = Color(0xFF6C63FF);
+const Color _green = Color(0xFF00BFA5);
+const Color _orange = Color(0xFFFF7043);
 
 class StatsDetailScreen extends StatefulWidget {
   final String sessionHost;
@@ -12,9 +18,13 @@ class StatsDetailScreen extends StatefulWidget {
 }
 
 class StatsDetailScreenState extends State<StatsDetailScreen> {
+  Map<String, dynamic> _stats = {};
   List<Map<String, dynamic>> _dailyStats = [];
+  Map<String, dynamic> _hourlyStats = {};
+  List<Map<String, dynamic>> _models = [];
   List<Map<String, dynamic>> _sessions = [];
   bool _loading = true;
+  int _trendTab = 0; // 0=今日逐小时, 1=7天, 2=30天
 
   @override
   void initState() {
@@ -26,25 +36,23 @@ class StatsDetailScreenState extends State<StatsDetailScreen> {
     setState(() => _loading = true);
     try {
       final host = widget.sessionHost;
-      // 每日统计
-      final dailyResp = await http.get(
-        Uri.parse('http://$host/api/stats/daily?days=30'),
-      ).timeout(const Duration(seconds: 5));
-      if (dailyResp.statusCode == 200) {
-        final data = jsonDecode(dailyResp.body);
-        if (data is List) {
-          setState(() => _dailyStats = data.cast<Map<String, dynamic>>());
-        }
+      final results = await Future.wait([
+        http.get(Uri.parse('http://$host/api/stats')).timeout(const Duration(seconds: 5)),
+        http.get(Uri.parse('http://$host/api/stats/daily?days=30')).timeout(const Duration(seconds: 5)),
+        http.get(Uri.parse('http://$host/api/stats/hourly')).timeout(const Duration(seconds: 5)),
+        http.get(Uri.parse('http://$host/api/stats/models')).timeout(const Duration(seconds: 5)),
+        http.get(Uri.parse('http://$host/api/sessions?limit=20')).timeout(const Duration(seconds: 5)),
+      ]);
+      if (results[0].statusCode == 200) _stats = jsonDecode(results[0].body);
+      if (results[1].statusCode == 200 && jsonDecode(results[1].body) is List) {
+        _dailyStats = (jsonDecode(results[1].body) as List).cast<Map<String, dynamic>>();
       }
-      // 会话列表
-      final sessResp = await http.get(
-        Uri.parse('http://$host/api/sessions?limit=20'),
-      ).timeout(const Duration(seconds: 5));
-      if (sessResp.statusCode == 200) {
-        final data = jsonDecode(sessResp.body);
-        if (data is List) {
-          setState(() => _sessions = data.cast<Map<String, dynamic>>());
-        }
+      if (results[2].statusCode == 200) _hourlyStats = jsonDecode(results[2].body);
+      if (results[3].statusCode == 200 && jsonDecode(results[3].body) is List) {
+        _models = (jsonDecode(results[3].body) as List).cast<Map<String, dynamic>>();
+      }
+      if (results[4].statusCode == 200 && jsonDecode(results[4].body) is List) {
+        _sessions = (jsonDecode(results[4].body) as List).cast<Map<String, dynamic>>();
       }
     } catch (_) {}
     setState(() => _loading = false);
@@ -53,7 +61,12 @@ class StatsDetailScreenState extends State<StatsDetailScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('统计详情')),
+      appBar: AppBar(
+        elevation: 0, scrolledUnderElevation: 0,
+        backgroundColor: const Color(0xFF0D0D1A),
+        title: const Text('统计详情', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        centerTitle: true,
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : RefreshIndicator(
@@ -61,9 +74,15 @@ class StatsDetailScreenState extends State<StatsDetailScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(16),
                 children: [
-                  _buildDailyChart(),
-                  const SizedBox(height: 28),
-                  _buildSessionList(),
+                  _buildSummaryCards(),
+                  const SizedBox(height: 20),
+                  _buildCacheRate(),
+                  const SizedBox(height: 24),
+                  _buildTrendSection(),
+                  const SizedBox(height: 24),
+                  _buildModelSection(),
+                  const SizedBox(height: 24),
+                  _buildSessionSection(),
                   const SizedBox(height: 40),
                 ],
               ),
@@ -71,125 +90,374 @@ class StatsDetailScreenState extends State<StatsDetailScreen> {
     );
   }
 
-  Widget _buildDailyChart() {
-    final valid = _dailyStats.where((d) => (d['total'] ?? 0) > 0).toList();
-    if (valid.isEmpty) {
-      return const Center(child: Text('暂无每日数据', style: TextStyle(color: Colors.white38)));
-    }
-    final maxVal = valid.fold<int>(0, (m, d) => (d['total'] as int) > m ? d['total'] as int : m);
-    if (maxVal == 0) return const SizedBox.shrink();
+  // ── 总览卡片 ──
 
+  Widget _buildSummaryCards() {
+    final total = (_stats['total_input_tokens'] ?? 0) + (_stats['total_output_tokens'] ?? 0)
+        + (_stats['total_cache_read'] ?? 0) + (_stats['total_cache_write'] ?? 0);
+    final today = (_stats['today_input_tokens'] ?? 0) + (_stats['today_output_tokens'] ?? 0)
+        + (_stats['today_cache_read'] ?? 0) + (_stats['today_cache_write'] ?? 0);
+    final cache = (_stats['total_cache_read'] ?? 0) + (_stats['total_cache_write'] ?? 0);
+
+    return Row(
+      children: [
+        Expanded(child: _summaryCard('总消耗', _fmt(total), _purple, Icons.token)),
+        const SizedBox(width: 10),
+        Expanded(child: _summaryCard('今日', _fmt(today), _green, Icons.today)),
+        const SizedBox(width: 10),
+        Expanded(child: _summaryCard('总缓存', _fmt(cache), _orange, Icons.cached)),
+      ],
+    );
+  }
+
+  Widget _summaryCard(String label, String value, Color color, IconData icon) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 22),
+          const SizedBox(height: 8),
+          Text(value, style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 4),
+          Text(label, style: TextStyle(fontSize: 11, color: Colors.white.withAlpha(100))),
+        ],
+      ),
+    );
+  }
+
+  // ── 缓存率进度条 ──
+
+  Widget _buildCacheRate() {
+    final inp = _stats['total_input_tokens'] ?? 0;
+    final outp = _stats['total_output_tokens'] ?? 0;
+    final cache = (_stats['total_cache_read'] ?? 0) + (_stats['total_cache_write'] ?? 0);
+    final total = inp + outp + cache;
+    final rate = total > 0 ? (cache / total * 100) : 0.0;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A1A2E),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('缓存率', style: TextStyle(fontSize: 13, color: Colors.white.withAlpha(150))),
+              Text('${rate.toStringAsFixed(1)}%',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _orange)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: rate / 100,
+              backgroundColor: Colors.white.withAlpha(10),
+              valueColor: const AlwaysStoppedAnimation<Color>(_orange),
+              minHeight: 8,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              _dotLabel(_purple, '输入 ${_fmt(inp)}'),
+              const SizedBox(width: 12),
+              _dotLabel(_green, '输出 ${_fmt(outp)}'),
+              const SizedBox(width: 12),
+              _dotLabel(_orange, '缓存 ${_fmt(cache)}'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _dotLabel(Color c, String t) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(width: 6, height: 6, decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+        const SizedBox(width: 4),
+        Text(t, style: TextStyle(fontSize: 10, color: Colors.white.withAlpha(100))),
+      ],
+    );
+  }
+
+  // ── 趋势 ──
+
+  Widget _buildTrendSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('每日 Token 消耗趋势',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
-                color: Colors.white.withAlpha(180))),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('消耗趋势', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
+                color: Colors.white.withAlpha(200))),
+            // Tab 切换
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A2E),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: ['今日', '7天', '30天'].asMap().entries.map((e) {
+                  final i = e.key;
+                  final active = _trendTab == i;
+                  return GestureDetector(
+                    onTap: () => setState(() => _trendTab = i),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: active ? _purple : Colors.transparent,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(e.value, style: TextStyle(
+                          fontSize: 12, fontWeight: active ? FontWeight.w600 : FontWeight.normal,
+                          color: active ? Colors.white : Colors.white.withAlpha(120))),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 16),
         SizedBox(
           height: 200,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            children: valid.map((d) {
-              final total = d['total'] as int;
-              final input = d['input'] as int;
-              final output = d['output'] as int;
-              final cache = d['cache'] as int;
-              final ratio = total / maxVal;
-              final barH = 140.0 * ratio;
-              return Container(
-                width: 56,
-                margin: const EdgeInsets.only(right: 6),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(_fmt(total),
-                        style: const TextStyle(fontSize: 9, color: Colors.white60)),
-                    const SizedBox(height: 4),
-                    // 堆叠柱状图
-                    SizedBox(
-                      height: 140,
-                      child: CustomPaint(
-                        size: const Size(36, 140),
-                        painter: _StackedBarPainter(
-                          inputRatio: input / maxVal,
-                          outputRatio: output / maxVal,
-                          cacheRatio: cache / maxVal,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(d['date'] as String,
-                        style: const TextStyle(fontSize: 10, color: Colors.white54)),
-                  ],
-                ),
+          child: _trendTab == 0 ? _buildHourlyChart() : _buildDailyChart(),
+        ),
+      ],
+    );
+  }
+
+  // ── 今日逐小时柱状图 ──
+
+  Widget _buildHourlyChart() {
+    final List<HourData> data = [];
+    for (int h = 0; h < 24; h++) {
+      final key = h.toString().padLeft(2, '0');
+      final d = _hourlyStats[key] as Map<String, dynamic>?;
+      final inp = (d?['input'] ?? 0) as int;
+      final outp = (d?['output'] ?? 0) as int;
+      final cache = (d?['cache'] ?? 0) as int;
+      data.add(HourData(h, inp, outp, cache));
+    }
+    final maxVal = data.map((d) => d.total).max;
+    if (maxVal == 0) return const Center(child: Text('暂无数据', style: TextStyle(color: Colors.white38)));
+
+    return BarChart(
+      BarChartData(
+        alignment: BarChartAlignment.spaceAround,
+        maxY: maxVal * 1.15,
+        barTouchData: BarTouchData(
+          enabled: true,
+          touchTooltipData: BarTouchTooltipData(
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              final d = data[group.x.toInt()];
+              return BarTooltipItem(
+                '${d.hour}:00\n输入 ${_fmt(d.inp)}\n输出 ${_fmt(d.outp)}\n缓存 ${_fmt(d.cache)}',
+                const TextStyle(color: Colors.white, fontSize: 11),
               );
-            }).toList(),
+            },
           ),
         ),
-        const SizedBox(height: 12),
-        // 图例
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _legend(const Color(0xFF6C63FF), '输入'),
-            const SizedBox(width: 16),
-            _legend(const Color(0xFF00BFA5), '输出'),
-            const SizedBox(width: 16),
-            _legend(const Color(0xFFFF7043), '缓存'),
-          ],
+        titlesData: FlTitlesData(
+          show: true,
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(showTitles: true, reservedSize: 22,
+              getTitlesWidget: (v, _) {
+                final h = (v % 24).toInt();
+                if (h % 4 != 0) return const SizedBox.shrink();
+                return Text('${h}时', style: TextStyle(fontSize: 10, color: Colors.white.withAlpha(80)));
+              },
+            ),
+          ),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(showTitles: true, reservedSize: 40,
+              getTitlesWidget: (v, _) {
+                return Text(_fmt(v.toInt()), style: TextStyle(fontSize: 9, color: Colors.white.withAlpha(60)));
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
         ),
-      ],
+        borderData: FlBorderData(show: false),
+        gridData: FlGridData(
+          show: true, drawVerticalLine: false,
+          horizontalInterval: maxVal / 4,
+          getDrawingHorizontalLine: (v) => FlLine(color: Colors.white.withAlpha(10), strokeWidth: 0.5),
+        ),
+        barGroups: data.map((d) => BarChartGroupData(
+          x: d.hour,
+          barRods: [
+            BarChartRodData(
+              toY: d.total.toDouble(),
+              width: 8,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+              color: _purple,
+            ),
+          ],
+        )).toList(),
+      ),
+      duration: const Duration(milliseconds: 200),
     );
   }
 
-  Widget _legend(Color c, String label) {
-    return Row(
-      children: [
-        Container(width: 10, height: 10, decoration: BoxDecoration(
-            color: c, borderRadius: BorderRadius.circular(2))),
-        const SizedBox(width: 4),
-        Text(label, style: const TextStyle(fontSize: 11, color: Colors.white60)),
-      ],
-    );
-  }
+  // ── 每日柱状图 ──
 
-  Widget _buildSessionList() {
-    if (_sessions.isEmpty) {
-      return const Center(child: Text('暂无会话', style: TextStyle(color: Colors.white38)));
+  Widget _buildDailyChart() {
+    final days = _trendTab == 1 ? 7 : 30;
+    var valid = _dailyStats.where((d) => (d['total'] ?? 0) > 0).toList();
+    if (_trendTab == 1 && valid.length > 7) {
+      valid = valid.length > 7 ? valid.sublist(valid.length - 7) : valid;
     }
+    if (valid.isEmpty) return const Center(child: Text('暂无数据', style: TextStyle(color: Colors.white38)));
 
-    // 计算总 token（含缓存）并排序
+    final maxVal = valid.fold<int>(0, (m, d) => (d['total'] as int) > m ? d['total'] as int : m);
+    if (maxVal == 0) return const SizedBox.shrink();
+
+    return BarChart(
+      BarChartData(
+        alignment: BarChartAlignment.spaceAround,
+        maxY: maxVal * 1.15,
+        barTouchData: BarTouchData(
+          enabled: true,
+          touchTooltipData: BarTouchTooltipData(
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              final d = valid[group.x.toInt()];
+              return BarTooltipItem(
+                '${d['date']}\n输入 ${_fmt(d['input'])}\n输出 ${_fmt(d['output'])}\n缓存 ${_fmt(d['cache'])}',
+                const TextStyle(color: Colors.white, fontSize: 11),
+              );
+            },
+          ),
+        ),
+        titlesData: FlTitlesData(
+          show: true,
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(showTitles: true, reservedSize: 22,
+              getTitlesWidget: (v, _) {
+                final i = v.toInt();
+                if (i < 0 || i >= valid.length) return const SizedBox.shrink();
+                if (valid.length > 10 && i % (valid.length ~/ 5 + 1) != 0) return const SizedBox.shrink();
+                return Text(valid[i]['date'] as String,
+                    style: TextStyle(fontSize: 10, color: Colors.white.withAlpha(80)));
+              },
+            ),
+          ),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(showTitles: true, reservedSize: 40,
+              getTitlesWidget: (v, _) {
+                return Text(_fmt(v.toInt()), style: TextStyle(fontSize: 9, color: Colors.white.withAlpha(60)));
+              },
+            ),
+          ),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+        ),
+        borderData: FlBorderData(show: false),
+        gridData: FlGridData(
+          show: true, drawVerticalLine: false,
+          horizontalInterval: maxVal / 4,
+          getDrawingHorizontalLine: (v) => FlLine(color: Colors.white.withAlpha(10), strokeWidth: 0.5),
+        ),
+        barGroups: valid.asMap().entries.map((e) => BarChartGroupData(
+          x: e.key,
+          barRods: [
+            BarChartRodData(
+              toY: (e.value['total'] as num).toDouble(),
+              width: _trendTab == 1 ? 28 : 8,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(4)),
+              color: _purple,
+            ),
+          ],
+        )).toList(),
+      ),
+      duration: const Duration(milliseconds: 200),
+    );
+  }
+
+  // ── 模型分布 ──
+
+  Widget _buildModelSection() {
+    if (_models.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('模型消耗分布', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
+            color: Colors.white.withAlpha(200))),
+        const SizedBox(height: 12),
+        ..._models.map((m) {
+          final pct = m['pct'] as num;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 120,
+                  child: Text(m['model'] as String, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13)),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: pct.toDouble() / 100,
+                      backgroundColor: Colors.white.withAlpha(10),
+                      valueColor: const AlwaysStoppedAnimation<Color>(_purple),
+                      minHeight: 10,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                SizedBox(
+                  width: 50,
+                  child: Text('$pct%', textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 12, color: Colors.white.withAlpha(150))),
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  // ── 会话占比 ──
+
+  Widget _buildSessionSection() {
+    if (_sessions.isEmpty) return const SizedBox.shrink();
     final sorted = List<Map<String, dynamic>>.from(_sessions);
     sorted.sort((a, b) {
-      final ta = ((a['input_tokens'] ?? 0) as int) + ((a['output_tokens'] ?? 0) as int)
-          + ((a['cache_read_tokens'] ?? 0) as int) + ((a['cache_write_tokens'] ?? 0) as int);
-      final tb = ((b['input_tokens'] ?? 0) as int) + ((b['output_tokens'] ?? 0) as int)
-          + ((b['cache_read_tokens'] ?? 0) as int) + ((b['cache_write_tokens'] ?? 0) as int);
+      final ta = _totalTokens(a);
+      final tb = _totalTokens(b);
       return tb.compareTo(ta);
     });
-
-    final grandTotal = sorted.fold<int>(0, (int s, item) {
-      final inp = (item['input_tokens'] ?? 0) as int;
-      final outp = (item['output_tokens'] ?? 0) as int;
-      final cache = ((item['cache_read_tokens'] ?? 0) as int) + ((item['cache_write_tokens'] ?? 0) as int);
-      return s + inp + outp + cache;
-    });
+    final grand = sorted.fold<int>(0, (s, item) => s + _totalTokens(item));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('会话消耗占比',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
-                color: Colors.white.withAlpha(180))),
+        Text('会话消耗排名', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
+            color: Colors.white.withAlpha(200))),
         const SizedBox(height: 12),
         ...sorted.map((s) {
-          final inp = s['input_tokens'] ?? 0;
-          final outp = s['output_tokens'] ?? 0;
-          final cache = (s['cache_read_tokens'] ?? 0) + (s['cache_write_tokens'] ?? 0);
+          final inp = (s['input_tokens'] ?? 0) as int;
+          final outp = (s['output_tokens'] ?? 0) as int;
+          final cache = ((s['cache_read_tokens'] ?? 0) as int) + ((s['cache_write_tokens'] ?? 0) as int);
           final total = inp + outp + cache;
-          final pct = grandTotal > 0 ? total / grandTotal : 0.0;
+          final pct = grand > 0 ? total / grand : 0.0;
           final title = s['title'] as String? ?? s['id'] as String;
           return Container(
             margin: const EdgeInsets.only(bottom: 8),
@@ -208,31 +476,29 @@ class StatsDetailScreenState extends State<StatsDetailScreen> {
                           style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
                     ),
                     Text('${(pct * 100).toStringAsFixed(1)}%',
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF6C63FF),
-                            fontWeight: FontWeight.w600)),
+                        style: const TextStyle(fontSize: 12, color: _purple, fontWeight: FontWeight.w600)),
                   ],
                 ),
                 const SizedBox(height: 6),
-                // 占比条
                 ClipRRect(
                   borderRadius: BorderRadius.circular(3),
                   child: LinearProgressIndicator(
                     value: pct,
                     backgroundColor: Colors.white10,
-                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF6C63FF)),
+                    valueColor: const AlwaysStoppedAnimation<Color>(_purple),
                     minHeight: 6,
                   ),
                 ),
                 const SizedBox(height: 6),
                 Row(
                   children: [
-                    _chip('I', _fmt(inp), const Color(0xFF6C63FF)),
+                    _chip('I', _fmt(inp), _purple),
                     const SizedBox(width: 6),
-                    _chip('O', _fmt(outp), const Color(0xFF00BFA5)),
+                    _chip('O', _fmt(outp), _green),
                     const SizedBox(width: 6),
-                    _chip('C', _fmt(cache), const Color(0xFFFF7043)),
+                    _chip('C', _fmt(cache), _orange),
                     const Spacer(),
-                    Text('${_fmt(total)}',
+                    Text(_fmt(total),
                         style: TextStyle(fontSize: 11, color: Colors.white.withAlpha(100))),
                   ],
                 ),
@@ -244,13 +510,15 @@ class StatsDetailScreenState extends State<StatsDetailScreen> {
     );
   }
 
+  int _totalTokens(Map<String, dynamic> s) {
+    return ((s['input_tokens'] ?? 0) as int) + ((s['output_tokens'] ?? 0) as int)
+        + ((s['cache_read_tokens'] ?? 0) as int) + ((s['cache_write_tokens'] ?? 0) as int);
+  }
+
   Widget _chip(String label, String value, Color color) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withAlpha(30),
-        borderRadius: BorderRadius.circular(4),
-      ),
+      decoration: BoxDecoration(color: color.withAlpha(30), borderRadius: BorderRadius.circular(4)),
       child: Text('$label $value',
           style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500)),
     );
@@ -264,57 +532,8 @@ class StatsDetailScreenState extends State<StatsDetailScreen> {
   }
 }
 
-class _StackedBarPainter extends CustomPainter {
-  final double inputRatio;
-  final double outputRatio;
-  final double cacheRatio;
-
-  _StackedBarPainter({
-    required this.inputRatio,
-    required this.outputRatio,
-    required this.cacheRatio,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final barW = size.width;
-    final barH = size.height;
-    final r = 4.0;
-
-    // totalR = 该日总量 / 最大值，决定柱子总高度
-    final totalR = inputRatio + outputRatio + cacheRatio;
-    if (totalR <= 0) return;
-
-    final actualH = (barH * totalR).clamp(0, barH);
-    double y = barH; // 从底部往上画
-
-    // 缓存（橙色）— 底部
-    if (cacheRatio > 0 && totalR > 0) {
-      final h = actualH * cacheRatio / totalR;
-      y -= h;
-      canvas.drawRRect(
-        RRect.fromRectAndCorners(Rect.fromLTWH(0, y, barW, h),
-            bottomLeft: Radius.circular(r), bottomRight: Radius.circular(r)),
-        Paint()..color = const Color(0xFFFF7043));
-    }
-    // 输出（绿色）— 中间
-    if (outputRatio > 0 && totalR > 0) {
-      final h = actualH * outputRatio / totalR;
-      y -= h;
-      canvas.drawRect(Rect.fromLTWH(0, y, barW, h), Paint()..color = const Color(0xFF00BFA5));
-    }
-    // 输入（紫色）— 顶部
-    if (inputRatio > 0 && totalR > 0) {
-      final h = actualH * inputRatio / totalR;
-      y -= h;
-      canvas.drawRRect(
-        RRect.fromRectAndCorners(Rect.fromLTWH(0, y, barW, h),
-            topLeft: Radius.circular(r), topRight: Radius.circular(r)),
-        Paint()..color = const Color(0xFF6C63FF));
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _StackedBarPainter old) =>
-      old.inputRatio != inputRatio || old.outputRatio != outputRatio || old.cacheRatio != cacheRatio;
+class HourData {
+  final int hour, inp, outp, cache;
+  int get total => inp + outp + cache;
+  HourData(this.hour, this.inp, this.outp, this.cache);
 }
